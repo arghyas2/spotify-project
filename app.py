@@ -1,8 +1,9 @@
-from flask import Flask, send_file, jsonify, render_template, redirect, request, session
+from flask import Flask, jsonify, redirect, request, session
 from spotipy.oauth2 import SpotifyOAuth
-import os, spotipy, requests, geohash2
+from flask_cors import CORS
+from flask_session import Session
+import os, spotipy, requests
 from dotenv import load_dotenv
-from geopy.geocoders import Nominatim
 
 load_dotenv()
 
@@ -25,7 +26,12 @@ app = Flask(__name__)
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['tm_root_url'] = tm_root_url
 app.config['tm_key'] = tm_key
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'
+app.config['SESSION_COOKIE_SECURE'] = True
 app.secret_key = os.getenv('SECRET_KEY')
+
+Session(app)
+CORS(app, resources={r"/*": {"origins": ["https://localhost:3000"]}}, supports_credentials=True)
 
 @app.route('/')
 def index():
@@ -56,28 +62,27 @@ def callback():
         auth = token_info
     
     session['auth'] = auth
-    return render_template('callback.html'), 200
+    return redirect(os.getenv('REACT_UTILITIES_URL')), 200
 
 @app.route('/findEvents', methods=['GET'])
 def find_events(): #find events based on the user's top 5 artists in the medium term
     top_artists = find_top_artists(5)
     events_info = {}
     for artist in top_artists:
+        events_info[artist] = [{'image':find_artist_image(artist), 'found':False}]
         attractionId = find_attraction_id(artist)
         if not attractionId:
             continue
         # latlong = f'{session["lat"]},{session["long"]}'
-        params = {'apikey':app.config['tm_key'], 'attractionId':attractionId}
+        # latlon = str(session['lat']) + ',' + str(session['long'])
+        # print(latlon)
+        params = {'apikey':app.config['tm_key'], 'attractionId':attractionId} #, 'latlon':latlon, 'radius':500}
         json = requests.get(url=app.config['tm_root_url'] + 'events.json', params=params).json()
         embedded = json.get('_embedded', None)
-        if not embedded:
-            events_info[artist] = None
-        else:
+        if embedded:
             events = embedded.get('events', None)
-            if not events:
-                events_info[artist] = None
-            else:
-                events_info[artist] = []
+            if events:
+                events_info[artist][0]['found'] = True
                 for event in events:
                     to_append = {}
                     to_append['name'] = event.get('name', None)
@@ -112,7 +117,16 @@ def find_top_artists(n: int) -> list:
         to_return.append(artist['name'])
     return to_return
 
-def find_attraction_id(artist: str):
+def find_artist_image(name: str) -> str:
+    spotify = spotipy.Spotify(auth=session['auth'])
+    results = spotify.search(q='artist:' + name, type='artist')
+    items = results['artists']['items']
+    if len(items) > 0:
+        artist = items[0]
+        return artist['images'][0]['url']
+    return None
+
+def find_attraction_id(artist: str) -> str:
     params = {'apikey':app.config['tm_key'], "keyword":artist}
     r = requests.get(url=app.config['tm_root_url'] + 'attractions.json', params=params)
     data = r.json()
@@ -123,4 +137,4 @@ def find_attraction_id(artist: str):
     return None
 
 if __name__ == '__main__':
-    app.run(debug=True, port=34000)
+    app.run(debug=True, ssl_context=('cert.pem', 'key.pem'), port=34000)
